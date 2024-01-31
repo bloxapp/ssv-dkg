@@ -772,7 +772,7 @@ func (c *Initiator) ProcessDKGResultResponse(responseResult [][]byte, id [24]byt
 			return nil, nil, nil, nil, nil, fmt.Errorf("%s", msgErr)
 		}
 		if tsp.Message.Type != wire.OutputMessageType {
-			return nil, nil, nil, nil, nil, fmt.Errorf("wrong DKG result message type")
+			return nil, nil, nil, nil, nil, fmt.Errorf("wrong DKG result message type, sender ID: %d, message type: %s", tsp.Signer, tsp.Message.Type.String())
 		}
 		result := &dkg.Result{}
 		if err := result.Decode(tsp.Message.Data); err != nil {
@@ -780,7 +780,7 @@ func (c *Initiator) ProcessDKGResultResponse(responseResult [][]byte, id [24]byt
 		}
 		// If incoming result is with wrong ID, bail
 		if !bytes.Equal(result.RequestID[:], id[:]) {
-			return nil, nil, nil, nil, nil, fmt.Errorf("DKG result has wrong ID")
+			return nil, nil, nil, nil, nil, fmt.Errorf("DKG result has wrong ID, sender ID: %d, message type: %s", tsp.Signer, tsp.Message.Type.String())
 		}
 		dkgResults = append(dkgResults, *result)
 		if err := validatorPubKey.Deserialize(dkgResults[0].ValidatorPubKey); err != nil {

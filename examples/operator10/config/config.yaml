@@ -1,0 +1,10 @@
+privKey: /data/operator10/encrypted_private_key.json
+privKeyPassword: /data/operator10/password
+port: 3030
+operatorID: 10
+logLevel: debug
+logFormat: json
+logLevelFormat: capitalColor
+logFilePath: /data/operator10/output/operator10_logs_debug.log
+DBPath: /data/operator10/output/operator10_db/
+outputPath: /data/operator10/output

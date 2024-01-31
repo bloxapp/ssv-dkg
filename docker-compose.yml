@@ -2,6 +2,11 @@ version: "3"
 services:
   operator1:
     image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
     networks:
       - shared_network
     ports:
@@ -12,6 +17,11 @@ services:
 
   operator2:
     image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
     networks:
       - shared_network
     ports:
@@ -22,6 +32,11 @@ services:
 
   operator3:
     image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
     networks:
       - shared_network
     ports:
@@ -32,6 +47,11 @@ services:
 
   operator4:
     image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
     networks:
       - shared_network
     ports:
@@ -42,6 +62,11 @@ services:
 
   operator5:
     image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
     networks:
       - shared_network
     ports:
@@ -52,6 +77,11 @@ services:
 
   operator6:
     image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
     networks:
       - shared_network
     ports:
@@ -62,6 +92,11 @@ services:
 
   operator7:
     image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
     networks:
       - shared_network
     ports:
@@ -72,6 +107,11 @@ services:
 
   operator8:
     image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
     networks:
       - shared_network
     ports:
@@ -80,13 +120,99 @@ services:
     volumes:
       - ./examples:/data
 
+  operator9:
+    image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
+    networks:
+      - shared_network
+    ports:
+      - "3038:3030"
+    command: ["start-operator", "--configPath", "/data/operator9/config"]
+    volumes:
+      - ./examples:/data
+
+  operator10:
+    image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
+    networks:
+      - shared_network
+    ports:
+      - "3039:3030"
+    command: ["start-operator", "--configPath", "/data/operator10/config"]
+    volumes:
+      - ./examples:/data
+
+  operator11:
+    image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
+    networks:
+      - shared_network
+    ports:
+      - "3040:3030"
+    command: ["start-operator", "--configPath", "/data/operator11/config"]
+    volumes:
+      - ./examples:/data
+
+  operator12:
+    image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
+    networks:
+      - shared_network
+    ports:
+      - "3041:3030"
+    command: ["start-operator", "--configPath", "/data/operator12/config"]
+    volumes:
+      - ./examples:/data
+
+  operator13:
+    image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
+    networks:
+      - shared_network
+    ports:
+      - "3042:3030"
+    command: ["start-operator", "--configPath", "/data/operator13/config"]
+    volumes:
+      - ./examples:/data
+
   initiator:
     image: ssv-dkg:latest
+    deploy:
+      resources:
+        limits:
+          cpus: "1"
+          memory: 500M
     depends_on:
       - operator1
       - operator2
       - operator3
       - operator4
+      - operator5
+      - operator6
+      - operator7
+      - operator8
+      - operator9
+      - operator10
     networks:
       - shared_network
     command: ["init", "--configPath", "/data/initiator/config"]
@@ -104,6 +230,11 @@ services:
       - operator6
       - operator7
       - operator8
+      - operator9
+      - operator10
+      - operator11
+      - operator12
+      - operator13
     networks:
       - shared_network
     command: ["reshare", "--configPath", "/data/initiator/config"]
@@ -117,6 +248,15 @@ services:
       - operator2
       - operator3
       - operator4
+      - operator5
+      - operator6
+      - operator7
+      - operator8
+      - operator9
+      - operator10
+      - operator11
+      - operator12
+      - operator13
     networks:
       - shared_network
     command:
