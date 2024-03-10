@@ -32,6 +32,8 @@ const (
 	PingMessageType
 	PongMessageType
 	ResultMessageType
+	ValidateKeysharesType
+	ValidateResultType
 )
 
 func (t TransportType) String() string {
@@ -66,6 +68,10 @@ func (t TransportType) String() string {
 		return "PongMessageType"
 	case ResultMessageType:
 		return "ResultMessageType"
+	case ValidateKeysharesType:
+		return "ValidateKeysharesType"
+	case ValidateResultType:
+		return "ValidateResultType"
 	default:
 		return "no type impl"
 	}
@@ -135,6 +141,23 @@ type Reshare struct {
 	CeremonySigs []byte `ssz-max:"16384"`
 	// Initiator public key
 	InitiatorPublicKey []byte `ssz-max:"612"`
+}
+
+type ValidateKeyshares struct {
+	// Operators involved in the DKG
+	Operators []*Operator `ssz-max:"13"`
+	// T is the threshold for signing
+	T uint64
+	// Encrypted BLS shares
+	Keyshares []byte `ssz-max:"32768"`
+	// Ceremony signatures
+	CeremonySigs []byte `ssz-max:"16384"`
+	// Initiator public key
+	InitiatorPublicKey []byte `ssz-max:"612"`
+}
+
+type ValidatationResult struct {
+	Signature []byte `ssz-max:"4096"`
 }
 
 // Exchange contains the session auth/ encryption key for each node

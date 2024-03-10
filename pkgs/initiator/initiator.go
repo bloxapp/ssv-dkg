@@ -61,12 +61,13 @@ func (o Operators) Clone() Operators {
 
 // Initiator main structure for initiator
 type Initiator struct {
-	Logger     *zap.Logger                            // logger
-	Client     *req.Client                            // http client
-	Operators  Operators                              // operators info mapping
-	VerifyFunc func(id uint64, msg, sig []byte) error // function to verify signatures of incoming messages
-	PrivateKey *rsa.PrivateKey                        // a unique initiator's RSA private key used for signing messages and identity
-	Version    []byte
+	Logger           *zap.Logger                            // logger
+	Client           *req.Client                            // http client
+	Operators        Operators                              // operators info mapping
+	VerifyFunc       func(id uint64, msg, sig []byte) error // function to verify signatures of incoming messages
+	PrivateKey       *rsa.PrivateKey                        // a unique initiator's RSA private key used for signing messages and identity
+	Version          []byte
+	KeysharesVersion []byte
 }
 
 // KeyShares structure to create an json file for ssv smart contract
@@ -115,7 +116,7 @@ type CeremonySigs struct {
 }
 
 // GeneratePayload generates at initiator ssv smart contract payload using DKG result  received from operators participating in DKG ceremony
-func (c *Initiator) generateSSVKeysharesPayload(dkgResults []dkg.Result, owner common.Address, nonce uint64) (*KeyShares, error) {
+func (c *Initiator) generateSSVKeysharesPayload(dkgResults []dkg.Result, owner common.Address, nonce uint64, ops []*wire.Operator) (*KeyShares, error) {
 	ids := make([]uint64, 0)
 	for i := 0; i < len(dkgResults); i++ {
 		ids = append(ids, dkgResults[i].OperatorID)
@@ -149,6 +150,10 @@ func (c *Initiator) generateSSVKeysharesPayload(dkgResults []dkg.Result, owner c
 		if err != nil {
 			return nil, err
 		}
+		// compare RSA public key at result that they match operators we requested to participate at the ceremony
+		if !bytes.Equal(encPubKey, ops[i].PubKey) {
+			return nil, fmt.Errorf("incoming ceremony result has  ")
+		}
 		operatorData = append(operatorData, OperatorData{
 			ID:          dkgResults[i].OperatorID,
 			OperatorKey: string(encPubKey),
@@ -181,13 +186,13 @@ func (c *Initiator) generateSSVKeysharesPayload(dkgResults []dkg.Result, owner c
 	}}}
 
 	ks := &KeyShares{}
-	ks.Version = "v1.1.0"
+	ks.Version = string(c.KeysharesVersion)
 	ks.Shares = data
 	ks.CreatedAt = time.Now().UTC()
 	return ks, nil
 }
 
-func GenerateAggregatesKeyshares(keySharesArr []*KeyShares) (*KeyShares, error) {
+func GenerateAggregatedKeyshares(keySharesArr []*KeyShares) (*KeyShares, error) {
 	// order the keyshares by nonce
 	sort.SliceStable(keySharesArr, func(i, j int) bool {
 		return keySharesArr[i].Shares[0].OwnerNonce < keySharesArr[j].Shares[0].OwnerNonce
@@ -203,24 +208,25 @@ func GenerateAggregatesKeyshares(keySharesArr []*KeyShares) (*KeyShares, error) 
 		data = append(data, keyShares.Shares...)
 	}
 	ks := &KeyShares{}
-	ks.Version = "v1.1.0"
+	ks.Version = keySharesArr[0].Version
 	ks.Shares = data
 	ks.CreatedAt = time.Now().UTC()
 	return ks, nil
 }
 
 // New creates a main initiator structure
-func New(privKey *rsa.PrivateKey, operatorMap Operators, logger *zap.Logger, ver string) *Initiator {
+func New(privKey *rsa.PrivateKey, operatorMap Operators, logger *zap.Logger, ver, ksVer string) *Initiator {
 	client := req.C()
 	// Set timeout for operator responses
 	client.SetTimeout(30 * time.Second)
 	c := &Initiator{
-		Logger:     logger,
-		Client:     client,
-		Operators:  operatorMap,
-		PrivateKey: privKey,
-		VerifyFunc: CreateVerifyFunc(operatorMap),
-		Version:    []byte(ver),
+		Logger:           logger,
+		Client:           client,
+		Operators:        operatorMap,
+		PrivateKey:       privKey,
+		VerifyFunc:       CreateVerifyFunc(operatorMap),
+		Version:          []byte(ver),
+		KeysharesVersion: []byte(ksVer),
 	}
 	return c
 }
@@ -280,12 +286,22 @@ func (c *Initiator) SendToAll(method string, msg []byte, operatorsIDs []*wire.Op
 
 	errarr := make([]error, 0)
 
+	responses := make([]opReqResult, 0)
 	for i := 0; i < len(operatorsIDs); i++ {
 		res := <-resc
 		if res.err != nil {
 			errarr = append(errarr, fmt.Errorf("operator ID: %d, %w", res.operatorID, res.err))
 			continue
 		}
+		responses = append(responses, res)
+		// final = append(final, res.result)
+	}
+	// sort responses
+	sort.SliceStable(responses, func(i, j int) bool {
+		return responses[i].operatorID < responses[j].operatorID
+	})
+	// iterate and create final
+	for _, res := range responses {
 		final = append(final, res.result)
 	}
 
@@ -309,7 +325,7 @@ func ParseAsError(msg []byte) (parsedErr, err error) {
 }
 
 // VerifyAll verifies incoming to initiator messages from operators.
-// Incoming message from operator should have same DKG ceremony ID and a valid signature
+// Incoming message from operator should have valid signature
 func (c *Initiator) VerifyAll(id [24]byte, allmsgs [][]byte) error {
 	var errs error
 	for i := 0; i < len(allmsgs); i++ {
@@ -618,6 +634,13 @@ func (c *Initiator) StartDKG(id [24]byte, withdraw []byte, ids []uint64, network
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	cSigBytes, err := hex.DecodeString(ceremonySigs.Sigs)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := c.ValidateKeysharesJSON(keyshares, cSigBytes, id, init, depositDataJson.PubKey); err != nil {
+		return nil, nil, nil, err
+	}
 	resultMsg := &wire.ResultData{
 		Operators:     ops,
 		Identifier:    id,
@@ -764,7 +787,7 @@ func (c *Initiator) processDKGResultResponseInitial(dkgResults []dkg.Result, ini
 		return nil, nil, err
 	}
 	c.Logger.Info("✅ deposit data was successfully reconstructed")
-	keyshares, err := c.generateSSVKeysharesPayload(dkgResults, init.Owner, init.Nonce)
+	keyshares, err := c.generateSSVKeysharesPayload(dkgResults, init.Owner, init.Nonce, init.Operators)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -780,7 +803,7 @@ func (c *Initiator) processDKGResultResponseResharing(dkgResults []dkg.Result, r
 	if !sorted {
 		return nil, fmt.Errorf("slice is not sorted")
 	}
-	keyshares, err := c.generateSSVKeysharesPayload(dkgResults, reshare.Owner, reshare.Nonce)
+	keyshares, err := c.generateSSVKeysharesPayload(dkgResults, reshare.Owner, reshare.Nonce, reshare.NewOperators)
 	if err != nil {
 		return nil, err
 	}
@@ -890,6 +913,14 @@ func (c *Initiator) SendReshareMsg(reshare *wire.Reshare, id [24]byte, ops []*wi
 		return nil, err
 	}
 	return c.SendToAll(consts.API_RESHARE_URL, signedReshareMsgBts, ops)
+}
+
+func (c *Initiator) SendValidateKeysharesMsg(init *wire.ValidateKeyshares, id [24]byte, operators []*wire.Operator) ([][]byte, error) {
+	signedValidateMsgBts, err := c.prepareAndSignMessage(init, wire.ValidateKeysharesType, id, c.Version)
+	if err != nil {
+		return nil, err
+	}
+	return c.SendToAll(consts.API_VALIDATE_KEYSHARES, signedValidateMsgBts, operators)
 }
 
 // SendExchangeMsgs sends combined exchange messages to each operator participating in DKG ceremony
@@ -1205,6 +1236,111 @@ func verifyDepositRoots(d *DepositDataCLI) error {
 	err = crypto.VerifyDepositData(network, depositData)
 	if err != nil {
 		return fmt.Errorf("failed to verify deposit data: %v", err)
+	}
+	return nil
+}
+
+func (c *Initiator) ValidateKeysharesJSON(ks *KeyShares, cSigsBytes []byte, id [24]byte, init *wire.Init, valPub string) error {
+	if ks.Version != string(c.KeysharesVersion) {
+		return fmt.Errorf("keyshares version mismatch at json file")
+	}
+	if ks.CreatedAt.String() == "" {
+		return fmt.Errorf("keyshares creation time is empty")
+	}
+	// 1. check operators at json
+	for i, op := range ks.Shares[0].Operators {
+		if op.ID != init.Operators[i].ID || op.OperatorKey != string(init.Operators[i].PubKey) {
+			return fmt.Errorf("incorrect keyshares creation time is empty")
+		}
+	}
+	// 2. check owner address is correct
+	owner := common.HexToAddress(ks.Shares[0].OwnerAddress)
+	if owner != init.Owner {
+		return fmt.Errorf("incorrect keyshares owner")
+	}
+	// 3. check nonce is correct
+	if ks.Shares[0].OwnerNonce != init.Nonce {
+		return fmt.Errorf("incorrect keyshares nonce")
+	}
+	// 4. check validator public key
+	validatorPublicKey, err := hex.DecodeString(strings.TrimPrefix(ks.Shares[0].PublicKey, "0x"))
+	if err != nil {
+		return fmt.Errorf("cant decode validator pub key %w", err)
+	}
+	if "0x"+valPub != ks.Shares[0].PublicKey {
+		return fmt.Errorf("incorrect keyshares validator pub key")
+	}
+	// 5. check operator IDs
+	for i, op := range init.Operators {
+		if ks.Shares[0].Payload.OperatorIDs[i] != op.ID {
+			return fmt.Errorf("incorrect keyshares operator IDs")
+		}
+	}
+	// 6. check validator public key at payload
+	if "0x"+valPub != ks.Shares[0].Payload.PublicKey {
+		return fmt.Errorf("incorrect keyshares payload validator pub key")
+	}
+	// 7. check encrypded shares data
+	sharesData, err := hex.DecodeString(strings.TrimPrefix(ks.Shares[0].Payload.SharesData, "0x"))
+	if err != nil {
+		return fmt.Errorf("cant decode enc shares %w", err)
+	}
+	operatorCount := len(init.Operators)
+	signatureOffset := phase0.SignatureLength
+	pubKeysOffset := phase0.PublicKeyLength*operatorCount + signatureOffset
+	sharesExpectedLength := crypto.EncryptedKeyLength*operatorCount + pubKeysOffset
+	if len(sharesData) != sharesExpectedLength {
+		return fmt.Errorf("shares data len is not correct")
+	}
+	signature := sharesData[:signatureOffset]
+	err = crypto.VerifyOwnerNonceSignature(signature, owner, validatorPublicKey, uint16(ks.Shares[0].OwnerNonce))
+	if err != nil {
+		return fmt.Errorf("owner+nonce signature is invalid at keyshares json %w", err)
+	}
+	// 8. send encrypted shares to decrypt the share and sign on test data.
+	// This way we can verify that operators able to decrypt and BLS threshold holds
+	validationMsg := &wire.ValidateKeyshares{
+		Operators:          init.Operators,
+		T:                  init.T,
+		Keyshares:          sharesData,
+		CeremonySigs:       cSigsBytes,
+		InitiatorPublicKey: init.InitiatorPublicKey,
+	}
+	results, err := c.SendValidateKeysharesMsg(validationMsg, id, init.Operators)
+	if err != nil {
+		return err
+	}
+	err = c.VerifyAll(id, results)
+	if err != nil {
+		return err
+	}
+	sigs := make([][]byte, len(init.Operators))
+	for i, res := range results {
+		signedValResMsg := &wire.SignedTransport{}
+		if err := signedValResMsg.UnmarshalSSZ(res); err != nil {
+			errmsg, parseErr := ParseAsError(res)
+			if parseErr == nil {
+				return fmt.Errorf("operator returned err: %v", errmsg)
+			}
+			return err
+		}
+		// Validate that incoming message is a keyshares validation result message
+		if signedValResMsg.Message.Type != wire.ValidateResultType {
+			return fmt.Errorf("wrong incoming message type from operator")
+		}
+		valRes := &wire.ValidatationResult{}
+		if err := valRes.UnmarshalSSZ(signedValResMsg.Message.Data); err != nil {
+			return err
+		}
+		sigs[i] = valRes.Signature
+	}
+	recon, err := crypto.ReconstructSignatures(ks.Shares[0].Payload.OperatorIDs, sigs)
+	if err != nil {
+		return err
+	}
+	err = crypto.VerifyReconstructedSignature(recon, validatorPublicKey, id[:])
+	if err != nil {
+		return err
 	}
 	return nil
 }
