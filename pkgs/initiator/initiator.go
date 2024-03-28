@@ -3,6 +3,7 @@ package initiator
 import (
 	"bytes"
 	"crypto/rsa"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -96,8 +97,11 @@ func GenerateAggregatesKeyshares(keySharesArr []*wire.KeySharesCLI) (*wire.KeySh
 }
 
 // New creates a main initiator structure
-func New(operators wire.OperatorsCLI, logger *zap.Logger, ver string) (*Initiator, error) {
+func New(operators wire.OperatorsCLI, logger *zap.Logger, ver string, certs []string) (*Initiator, error) {
 	client := req.C()
+	// set CA certificates if any
+	client.SetRootCertsFromFile(certs...)
+	client.SetTLSClientConfig(&tls.Config{InsecureSkipVerify: true})
 	// Set timeout for operator responses
 	client.SetTimeout(30 * time.Second)
 	privKey, _, err := crypto.GenerateRSAKeys()
@@ -124,12 +128,15 @@ func ValidatedOperatorData(ids []uint64, operators wire.OperatorsCLI) ([]*wire.O
 		return nil, fmt.Errorf("wrong operators len: > 13")
 	}
 	if len(ids)%3 != 1 {
-		return nil, fmt.Errorf("amount of operators should be 4,7,10,13")
+		return nil, fmt.Errorf("amount of operators should be 4,7,10,13: got %d", ids)
 	}
 
 	ops := make([]*wire.Operator, len(ids))
 	opMap := make(map[uint64]struct{})
 	for i, id := range ids {
+		if id == 0 {
+			return nil, errors.New("operator ID cannot be 0")
+		}
 		op := operators.ByID(id)
 		if op == nil {
 			return nil, errors.New("operator is not in given operator data list")
@@ -396,9 +403,6 @@ func (c *Initiator) sendResult(resData *wire.ResultData, operators []*wire.Opera
 }
 
 func (c *Initiator) Ping(ips []string) error {
-	client := req.C()
-	// Set timeout for operator responses
-	client.SetTimeout(30 * time.Second)
 	resc := make(chan wire.PongResult, len(ips))
 	for _, ip := range ips {
 		go func(ip string) {

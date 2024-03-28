@@ -48,8 +48,7 @@ var StartDKG = &cobra.Command{
 			return err
 		}
 		defer func() {
-			err := logger.Sync()
-			if err != nil {
+			if err := cli_utils.Sync(logger); err != nil {
 				log.Printf("Failed to sync logger: %v", err)
 			}
 		}()
@@ -75,7 +74,7 @@ var StartDKG = &cobra.Command{
 			i := i
 			pool.Go(func(ctx context.Context) (*Result, error) {
 				// Create new DKG initiator
-				dkgInitiator, err := initiator.New(opMap.Clone(), logger, cmd.Version)
+				dkgInitiator, err := initiator.New(opMap.Clone(), logger, cmd.Version, cli_utils.ClientCACertPath)
 				if err != nil {
 					return nil, err
 				}
@@ -140,11 +139,7 @@ var StartDKG = &cobra.Command{
 		 ░ ░  ░  ▒ ░░  ░  ░  ░          ░ ░    ░   ▒    ▒ ░░      ░      ░     ░░   ░ 
 		   ░     ░        ░  ░ ░          ░  ░     ░  ░ ░         ░      ░  ░   ░     
 		 ░                   ░                                                        
-		 
-		 This tool was not audited.
-		 When using distributed key generation you understand all the risks involved with
-		 experimental cryptography.  
-		 `)
+		`)
 		return nil
 	},
 }
