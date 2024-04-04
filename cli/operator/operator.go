@@ -36,19 +36,23 @@ var StartDKGOperator = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		defer logger.Sync()
+		defer func() {
+			if err := cli_utils.Sync(logger); err != nil {
+				log.Printf("Failed to sync logger: %v", err)
+			}
+		}()
 		logger.Info("🪛 Operator`s", zap.String("Version", cmd.Version))
 		logger.Info("🔑 opening operator RSA private key file")
 		privateKey, err := cli_utils.OpenPrivateKey(cli_utils.PrivKeyPassword, cli_utils.PrivKey)
 		if err != nil {
 			logger.Fatal("😥 Failed to load private key: ", zap.Error(err))
 		}
-		srv, err := operator.New(privateKey, logger, []byte(cmd.Version), cli_utils.OperatorID)
+		srv, err := operator.New(privateKey, logger, []byte(cmd.Version), cli_utils.OperatorID, cli_utils.OutputPath)
 		if err != nil {
 			logger.Fatal("😥 Failed to create new operator instance: ", zap.Error(err))
 		}
 		logger.Info("🚀 Starting DKG operator", zap.Uint64("at port", cli_utils.Port))
-		if err := srv.Start(uint16(cli_utils.Port)); err != nil {
+		if err := srv.Start(uint16(cli_utils.Port), cli_utils.ServerTLSCertPath, cli_utils.ServerTLSKeyPath); err != nil {
 			log.Fatalf("Error in operator %v", err)
 		}
 		return nil

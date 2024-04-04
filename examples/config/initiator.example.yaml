@@ -1,4 +1,4 @@
-operatorIDs: [1, 2, 3, 4]
+operatorIDs: [1, 22, 44, 55]
 withdrawAddress: "0x81592c3de184a3e2c0dcb5a261bc107bfa91f494"
 owner: "0x81592c3de184a3e2c0dcb5a261bc107bfa91f494"
 nonce: 1
@@ -26,8 +26,8 @@ validators: 10
 #   }]'
 operatorsInfoPath: /data/initiator/operators_info.json
 outputPath: /data/initiator/output
-generateInitiatorKeyIfNotExisting: true
 logLevel: info
 logFormat: json
 logLevelFormat: capitalColor
 logFilePath: /data/initiator/output/initiator_debug.log
+# clientCACertPath: /data/initiator/rootCA.crt
