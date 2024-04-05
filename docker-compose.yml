@@ -139,7 +139,7 @@ services:
       - shared_network
     ports:
       - "3038:3030"
-    command: ["start-operator", "--configPath", "/data/operator9/config"]
+    command: ["start-operator", "--configPath", "/data/config/operator9.example.yaml"]
     volumes:
       - ./examples:/data
 
@@ -154,7 +154,7 @@ services:
       - shared_network
     ports:
       - "3039:3030"
-    command: ["start-operator", "--configPath", "/data/operator10/config"]
+    command: ["start-operator", "--configPath", "/data/config/operator10.example.yaml"]
     volumes:
       - ./examples:/data
 
@@ -169,7 +169,7 @@ services:
       - shared_network
     ports:
       - "3040:3030"
-    command: ["start-operator", "--configPath", "/data/operator11/config"]
+    command: ["start-operator", "--configPath", "/data/config/operator11.example.yaml"]
     volumes:
       - ./examples:/data
 
@@ -184,7 +184,7 @@ services:
       - shared_network
     ports:
       - "3041:3030"
-    command: ["start-operator", "--configPath", "/data/operator12/config"]
+    command: ["start-operator", "--configPath", "/data/config/operator12.example.yaml"]
     volumes:
       - ./examples:/data
 
@@ -199,7 +199,7 @@ services:
       - shared_network
     ports:
       - "3042:3030"
-    command: ["start-operator", "--configPath", "/data/operator13/config"]
+    command: ["start-operator", "--configPath", "/data/config/operator13.example.yaml"]
     volumes:
       - ./examples:/data
 
@@ -221,6 +221,9 @@ services:
       - operator8
       - operator9
       - operator10
+      - operator11
+      - operator12
+      - operator13
     networks:
       - shared_network
     command: ["init", "--configPath", "/data/config/initiator.example.yaml"]
