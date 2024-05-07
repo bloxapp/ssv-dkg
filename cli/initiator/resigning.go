@@ -17,30 +17,27 @@ import (
 	"github.com/bloxapp/ssv-dkg/pkgs/wire"
 )
 
-const (
-	// maxConcurrency is the maximum number of DKG inits to run concurrently.
-	maxConcurrency = 20
-)
-
 func init() {
-	cli_utils.SetInitFlags(StartDKG)
+	cli_utils.SetResigningFlags(StartResigning)
 }
 
-var StartDKG = &cobra.Command{
-	Use:   "init",
-	Short: "Initiates a DKG protocol",
+var StartResigning = &cobra.Command{
+	Use:   "resign",
+	Short: "Resigning DKG results",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Println(`
-		█████╗ ██╗  ██╗ ██████╗     ██╗███╗   ██╗██╗████████╗██╗ █████╗ ████████╗ ██████╗ ██████╗ 
-		██╔══██╗██║ ██╔╝██╔════╝     ██║████╗  ██║██║╚══██╔══╝██║██╔══██╗╚══██╔══╝██╔═══██╗██╔══██╗
-		██║  ██║█████╔╝ ██║  ███╗    ██║██╔██╗ ██║██║   ██║   ██║███████║   ██║   ██║   ██║██████╔╝
-		██║  ██║██╔═██╗ ██║   ██║    ██║██║╚██╗██║██║   ██║   ██║██╔══██║   ██║   ██║   ██║██╔══██╗
-		██████╔╝██║  ██╗╚██████╔╝    ██║██║ ╚████║██║   ██║   ██║██║  ██║   ██║   ╚██████╔╝██║  ██║
-		╚═════╝ ╚═╝  ╚═╝ ╚═════╝     ╚═╝╚═╝  ╚═══╝╚═╝   ╚═╝   ╚═╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚═╝  ╚═╝`)
+		██████╗ ██╗  ██╗ ██████╗     ██████╗ ███████╗███████╗██╗ ██████╗ ███╗   ██╗
+		██╔══██╗██║ ██╔╝██╔════╝     ██╔══██╗██╔════╝██╔════╝██║██╔════╝ ████╗  ██║
+		██║  ██║█████╔╝ ██║  ███╗    ██████╔╝█████╗  ███████╗██║██║  ███╗██╔██╗ ██║
+		██║  ██║██╔═██╗ ██║   ██║    ██╔══██╗██╔══╝  ╚════██║██║██║   ██║██║╚██╗██║
+		██████╔╝██║  ██╗╚██████╔╝    ██║  ██║███████╗███████║██║╚██████╔╝██║ ╚████║
+		╚═════╝ ╚═╝  ╚═╝ ╚═════╝     ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝ ╚═════╝ ╚═╝  ╚═══╝
+																				`)
+
 		if err := cli_utils.SetViperConfig(cmd); err != nil {
 			return err
 		}
-		if err := cli_utils.BindInitFlags(cmd); err != nil {
+		if err := cli_utils.BindResigningFlags(cmd); err != nil {
 			return err
 		}
 		logger, err := cli_utils.SetGlobalLogger(cmd, "dkg-initiator")
@@ -53,23 +50,27 @@ var StartDKG = &cobra.Command{
 			}
 		}()
 		logger.Info("🪛 Initiator`s", zap.String("Version", cmd.Version))
-		// Load operators TODO: add more sources.
-		operatorIDs, err := cli_utils.StingSliceToUintArray(cli_utils.OperatorIDs)
-		if err != nil {
-			logger.Fatal("😥 Failed to load participants: ", zap.Error(err))
-		}
+		// Load operators
 		opMap, err := cli_utils.LoadOperators(logger)
 		if err != nil {
 			logger.Fatal("😥 Failed to load operators: ", zap.Error(err))
+		}
+		operatorIDs, err := cli_utils.StingSliceToUintArray(cli_utils.OperatorIDs)
+		if err != nil {
+			logger.Fatal("😥 Failed to load participants: ", zap.Error(err))
 		}
 		ethnetwork := e2m_core.MainNetwork
 		if cli_utils.Network != "now_test_network" {
 			ethnetwork = e2m_core.NetworkFromString(cli_utils.Network)
 		}
+		arrayOfSignedProofs, err := wire.LoadProofs(cli_utils.ProofsFilePath)
+		if err != nil {
+			logger.Fatal("😥 Failed to read proofs json file:", zap.Error(err))
+		}
 		// start the ceremony
 		ctx := context.Background()
 		pool := pool.NewWithResults[*Result]().WithContext(ctx).WithFirstError().WithMaxGoroutines(maxConcurrency)
-		for i := 0; i < int(cli_utils.Validators); i++ {
+		for i := 0; i < len(arrayOfSignedProofs); i++ {
 			i := i
 			pool.Go(func(ctx context.Context) (*Result, error) {
 				// Create new DKG initiator
@@ -77,18 +78,19 @@ var StartDKG = &cobra.Command{
 				if err != nil {
 					return nil, err
 				}
+				proofsData := wire.ConvertSignedProofsToSpec(arrayOfSignedProofs[i])
 				// Create a new ID.
 				id := crypto.NewID()
 				nonce := cli_utils.Nonce + uint64(i)
-				// Perform the ceremony.
-				depositData, keyShares, proofs, err := dkgInitiator.StartDKG(id, cli_utils.WithdrawAddress.Bytes(), operatorIDs, ethnetwork, cli_utils.OwnerAddress, nonce)
+				// Perform the resigning ceremony.
+				depositData, keyShares, proofs, err := dkgInitiator.StartResigning(id, operatorIDs, proofsData, ethnetwork, cli_utils.WithdrawAddress.Bytes(), cli_utils.OwnerAddress, nonce)
 				if err != nil {
 					return nil, err
 				}
-				logger.Debug("DKG ceremony completed",
+				logger.Debug("Resigning ceremony completed",
 					zap.String("id", hex.EncodeToString(id[:])),
 					zap.Uint64("nonce", nonce),
-					zap.String("pubkey", depositData.PubKey),
+					zap.String("pubkey", keyShares.Shares[0].ShareData.PublicKey),
 				)
 				return &Result{
 					id:          id,
@@ -101,7 +103,7 @@ var StartDKG = &cobra.Command{
 		}
 		results, err := pool.Wait()
 		if err != nil {
-			logger.Fatal("😥 Failed to initiate DKG ceremony: ", zap.Error(err))
+			logger.Fatal("😥 Failed to initiate Resigning ceremony: ", zap.Error(err))
 		}
 		var depositDataArr []*wire.DepositDataCLI
 		var keySharesArr []*wire.KeySharesCLI
@@ -119,7 +121,7 @@ var StartDKG = &cobra.Command{
 			keySharesArr,
 			proofs,
 			false,
-			int(cli_utils.Validators),
+			len(arrayOfSignedProofs),
 			cli_utils.OwnerAddress,
 			cli_utils.Nonce,
 			cli_utils.WithdrawAddress,
@@ -127,15 +129,7 @@ var StartDKG = &cobra.Command{
 		); err != nil {
 			logger.Fatal("Could not save results", zap.Error(err))
 		}
-		logger.Info("🚀 DKG ceremony completed")
+		logger.Info("🚀 Resigning ceremony completed")
 		return nil
 	},
-}
-
-type Result struct {
-	id          [24]byte
-	nonce       uint64
-	depositData *wire.DepositDataCLI
-	keyShares   *wire.KeySharesCLI
-	proof       []*wire.SignedProof
 }
