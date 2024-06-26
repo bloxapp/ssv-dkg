@@ -2,6 +2,7 @@ package initiator
 
 import (
 	"bytes"
+	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/tls"
 	"encoding/hex"
@@ -19,10 +20,13 @@ import (
 	spec_crypto "github.com/ssvlabs/dkg-spec/crypto"
 	"go.uber.org/zap"
 
+	e2m_core "github.com/bloxapp/eth2-key-manager/core"
 	eth2_key_manager_core "github.com/bloxapp/eth2-key-manager/core"
 	"github.com/bloxapp/ssv-dkg/pkgs/consts"
 	"github.com/bloxapp/ssv-dkg/pkgs/crypto"
+	"github.com/bloxapp/ssv-dkg/pkgs/utils"
 	"github.com/bloxapp/ssv-dkg/pkgs/wire"
+	eth_crypto "github.com/ethereum/go-ethereum/crypto"
 )
 
 type VerifyMessageSignatureFunc func(pub *rsa.PublicKey, msg, sig []byte) error
@@ -165,50 +169,117 @@ func ValidatedOperatorData(ids []uint64, operators wire.OperatorsCLI) ([]*spec.O
 // messageFlowHandling main steps of DKG at initiator
 func (c *Initiator) initMessageFlowHandling(init *spec.Init, id [24]byte, operators []*spec.Operator) ([][]byte, error) {
 	c.Logger.Info("phase 1: sending init message to operators")
-	results, err := c.SendInitMsg(init, id, operators)
+	exchangeMsgs, errs, err := c.SendInitMsg(id, init, operators)
 	if err != nil {
 		return nil, err
 	}
-	err = verifyMessageSignatures(id, results, c.VerifyMessageSignature)
+	// check that all operators replied
+	if err := checkThreshold(exchangeMsgs, errs, operators, operators, len(operators)); err != nil {
+		return nil, err
+	}
+	err = verifyMessageSignatures(id, exchangeMsgs, c.VerifyMessageSignature)
 	if err != nil {
 		return nil, err
 	}
 	c.Logger.Info("phase 1: ✅ verified operator init responses signatures")
-
 	c.Logger.Info("phase 2: ➡️ sending operator data (exchange messages) required for dkg")
-	results, err = c.SendExchangeMsgs(results, id, operators)
+	kyberMsgs, errs, err := c.SendExchangeMsgs(id, exchangeMsgs, operators)
 	if err != nil {
 		return nil, err
 	}
-	err = verifyMessageSignatures(id, results, c.VerifyMessageSignature)
+	if err := checkThreshold(kyberMsgs, errs, operators, operators, len(operators)); err != nil {
+		return nil, err
+	}
+	err = verifyMessageSignatures(id, kyberMsgs, c.VerifyMessageSignature)
 	if err != nil {
 		return nil, err
 	}
 	c.Logger.Info("phase 2: ✅ verified operator responses (deal messages) signatures")
 	c.Logger.Info("phase 3: ➡️ sending deal dkg data to all operators")
-	dkgResult, err := c.SendKyberMsgs(results, id, operators)
+	dkgResult, errs, err := c.SendKyberMsgs(id, kyberMsgs, operators)
 	if err != nil {
 		return nil, err
 	}
-	err = verifyMessageSignatures(id, results, c.VerifyMessageSignature)
+	if err := checkThreshold(dkgResult, errs, operators, operators, len(operators)); err != nil {
+		return nil, err
+	}
+	err = verifyMessageSignatures(id, dkgResult, c.VerifyMessageSignature)
 	if err != nil {
 		return nil, err
+	}
+	var finalResults [][]byte
+	for _, res := range dkgResult {
+		finalResults = append(finalResults, res)
 	}
 	c.Logger.Info("phase 2: ✅ verified operator dkg results signatures")
-	return dkgResult, nil
+	return finalResults, nil
 }
 
 func (c *Initiator) resignMessageFlowHandling(rMsg *wire.ResignMessage, id [24]byte, operators []*spec.Operator) ([][]byte, error) {
-	results, err := c.SendResignMsg(rMsg, id, operators)
+	dkgResult, errs, err := c.SendResignMsg(id, rMsg, operators)
 	if err != nil {
 		return nil, err
 	}
-	err = verifyMessageSignatures(id, results, c.VerifyMessageSignature)
+	// sanity check
+	if err := checkThreshold(dkgResult, errs, operators, operators, len(operators)); err != nil {
+		return nil, err
+	}
+	err = verifyMessageSignatures(id, dkgResult, c.VerifyMessageSignature)
 	if err != nil {
 		return nil, err
 	}
 	c.Logger.Info("✅ verified operator response signatures")
+	var results [][]byte
+	for _, res := range dkgResult {
+		results = append(results, res)
+	}
 	return results, nil
+}
+
+func (c *Initiator) messageFlowHandlingReshare(id [24]byte, reshareMsg *wire.ReshareMessage) ([][]byte, error) {
+	c.Logger.Info("phase 1: sending reshare message to old operators")
+	allOps := utils.JoinSets(reshareMsg.SignedReshare.Reshare.OldOperators, reshareMsg.SignedReshare.Reshare.NewOperators)
+	exchangeMsgs, errs, err := c.SendReshareMsg(id, reshareMsg, allOps)
+	if err != nil {
+		return nil, err
+	}
+	// check that all new operators and threshold of old operators replied without errors
+	if err := checkThreshold(exchangeMsgs, errs, reshareMsg.SignedReshare.Reshare.OldOperators, reshareMsg.SignedReshare.Reshare.NewOperators, int(reshareMsg.SignedReshare.Reshare.OldT)); err != nil {
+		return nil, err
+	}
+	err = verifyMessageSignatures(id, exchangeMsgs, c.VerifyMessageSignature)
+	if err != nil {
+		return nil, err
+	}
+	c.Logger.Info("phase 1: ✅ verified operator resharing responses signatures")
+	c.Logger.Info("phase 2: ➡️ sending operator data (exchange messages) required for dkg")
+	kyberMsgs, errs, err := c.SendExchangeMsgs(id, exchangeMsgs, allOps)
+	if err != nil {
+		return nil, err
+	}
+	err = verifyMessageSignatures(id, kyberMsgs, c.VerifyMessageSignature)
+	if err != nil {
+		return nil, err
+	}
+	c.Logger.Info("phase 2: ✅ verified old operator responses (deal messages) signatures")
+	c.Logger.Info("phase 3: ➡️ sending deal dkg data to new operators")
+	dkgResult, errs, err := c.SendKyberMsgs(id, kyberMsgs, reshareMsg.SignedReshare.Reshare.NewOperators)
+	if err != nil {
+		return nil, err
+	}
+	for id := range dkgResult {
+		c.Logger.Info("DKG Reshare results", zap.Any("id", id))
+	}
+	err = verifyMessageSignatures(id, kyberMsgs, c.VerifyMessageSignature)
+	if err != nil {
+		return nil, err
+	}
+	c.Logger.Info("phase 2: ✅ verified operator dkg results signatures")
+	var finalResults [][]byte
+	for _, res := range dkgResult {
+		finalResults = append(finalResults, res)
+	}
+	return finalResults, nil
 }
 
 // StartDKG starts DKG ceremony at initiator with requested parameters
@@ -293,36 +364,15 @@ func (c *Initiator) StartDKG(id [24]byte, withdraw []byte, ids []uint64, network
 	return depositDataJson, keyshares, proofsArray, nil
 }
 
-func (c *Initiator) StartResigning(id [24]byte, ids []uint64, proofs []*spec.SignedProof, network eth2_key_manager_core.Network, withdraw []byte, owner [20]byte, nonce uint64) (*wire.DepositDataCLI, *wire.KeySharesCLI, []*wire.SignedProof, error) {
-	if len(proofs) == 0 {
-		return nil, nil, nil, fmt.Errorf("🤖 unmarshaled proofs object is empty")
-	}
-	ops, err := ValidatedOperatorData(ids, c.Operators)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	pkBytes, err := spec_crypto.EncodeRSAPublicKey(&c.PrivateKey.PublicKey)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	instanceIDField := zap.String("Ceremony ID", hex.EncodeToString(id[:]))
-	c.Logger.Info("🚀 Starting dkg ceremony", zap.String("initiator public key", string(pkBytes)), zap.Uint64s("operator IDs", ids), instanceIDField)
-	// make resign message
-	rMsg := &wire.ResignMessage{
-		Operators: ops,
-		Resign: &spec.Resign{ValidatorPubKey: proofs[0].Proof.ValidatorPubKey,
-			Fork:                  network.GenesisForkVersion(),
-			WithdrawalCredentials: withdraw,
-			Owner:                 owner,
-			Nonce:                 nonce},
-		Proofs: proofs,
-	}
+func (c *Initiator) StartResigning(id [24]byte, rMsg *wire.ResignMessage) (*wire.DepositDataCLI, *wire.KeySharesCLI, []*wire.SignedProof, error) {
+	c.Logger = c.Logger.With(zap.String("Ceremony ID", hex.EncodeToString(id[:])))
+	c.Logger.Info("🚀 Starting resigning ceremony")
 	c.Logger.Info("Outgoing resign request fields",
-		zap.String("network", hex.EncodeToString(rMsg.Resign.Fork[:])),
-		zap.String("withdrawal", hex.EncodeToString(rMsg.Resign.WithdrawalCredentials)),
-		zap.String("owner", hex.EncodeToString(rMsg.Resign.Owner[:])),
-		zap.Uint64("nonce", rMsg.Resign.Nonce),
-		zap.Any("operator IDs", ids))
+		zap.String("network", hex.EncodeToString(rMsg.SignedResign.Resign.Fork[:])),
+		zap.String("withdrawal", hex.EncodeToString(rMsg.SignedResign.Resign.WithdrawalCredentials)),
+		zap.String("owner", hex.EncodeToString(rMsg.SignedResign.Resign.Owner[:])),
+		zap.Uint64("nonce", rMsg.SignedResign.Resign.Nonce),
+		zap.Any("operators IDs", rMsg.Operators))
 	for _, proof := range rMsg.Proofs {
 		c.Logger.Info("Loaded proof",
 			zap.String("ValidatorPubKey", hex.EncodeToString(proof.Proof.ValidatorPubKey)),
@@ -331,8 +381,10 @@ func (c *Initiator) StartResigning(id [24]byte, ids []uint64, proofs []*spec.Sig
 			zap.String("EncryptedShare", hex.EncodeToString(proof.Proof.EncryptedShare)),
 			zap.String("Signature", hex.EncodeToString(proof.Signature)))
 	}
-	c.Logger = c.Logger.With(instanceIDField)
-	resultsBytes, err := c.resignMessageFlowHandling(rMsg, id, ops)
+	resultsBytes, err := c.resignMessageFlowHandling(
+		rMsg,
+		id,
+		rMsg.Operators)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -340,15 +392,22 @@ func (c *Initiator) StartResigning(id [24]byte, ids []uint64, proofs []*spec.Sig
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	depositDataJson, keyshares, err := c.processDKGResultResponse(dkgResults, id, rMsg.Operators, rMsg.Resign.WithdrawalCredentials, rMsg.Resign.Fork, rMsg.Resign.Owner, rMsg.Resign.Nonce)
+	depositDataJson, keyshares, err := c.processDKGResultResponse(
+		dkgResults,
+		id,
+		rMsg.Operators,
+		rMsg.SignedResign.Resign.WithdrawalCredentials,
+		rMsg.SignedResign.Resign.Fork,
+		rMsg.SignedResign.Resign.Owner,
+		rMsg.SignedResign.Resign.Nonce)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	c.Logger.Info("✅ verified master signature for ssv contract data")
-	if err := crypto.ValidateDepositDataCLI(depositDataJson, common.BytesToAddress(withdraw)); err != nil {
+	if err := crypto.ValidateDepositDataCLI(depositDataJson, common.BytesToAddress(rMsg.SignedResign.Resign.WithdrawalCredentials)); err != nil {
 		return nil, nil, nil, err
 	}
-	if err := crypto.ValidateKeysharesCLI(keyshares, rMsg.Operators, rMsg.Resign.Owner, rMsg.Resign.Nonce, depositDataJson.PubKey); err != nil {
+	if err := crypto.ValidateKeysharesCLI(keyshares, rMsg.Operators, rMsg.SignedResign.Resign.Owner, rMsg.SignedResign.Resign.Nonce, depositDataJson.PubKey); err != nil {
 		return nil, nil, nil, err
 	}
 	// sending back to operators results
@@ -369,13 +428,87 @@ func (c *Initiator) StartResigning(id [24]byte, ids []uint64, proofs []*spec.Sig
 		return nil, nil, nil, err
 	}
 	resultMsg := &wire.ResultData{
-		Operators:     ops,
+		Operators:     rMsg.Operators,
 		Identifier:    id,
 		DepositData:   depositData,
 		KeysharesData: keysharesData,
 		Proofs:        proofsData,
 	}
-	err = c.sendResult(resultMsg, ops, consts.API_RESULTS_URL, id)
+	err = c.sendResult(resultMsg, rMsg.Operators, consts.API_RESULTS_URL, id)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("🤖 Error storing results at operators %w", err)
+	}
+	return depositDataJson, keyshares, proofsArray, nil
+}
+
+func (c *Initiator) StartResharing(id [24]byte, reshareMsg *wire.ReshareMessage) (*wire.DepositDataCLI, *wire.KeySharesCLI, []*wire.SignedProof, error) {
+	dkgResultsBytes, err := c.messageFlowHandlingReshare(id, reshareMsg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	dkgResults, err := parseDKGResultsFromBytes(dkgResultsBytes, id)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	c.Logger.Info("🏁 DKG Reshare ceremony completed, validating results...")
+	_, _, _, err = spec.ValidateResults(
+		reshareMsg.SignedReshare.Reshare.NewOperators,
+		reshareMsg.SignedReshare.Reshare.WithdrawalCredentials,
+		reshareMsg.Proofs[0].Proof.ValidatorPubKey,
+		reshareMsg.SignedReshare.Reshare.Fork,
+		reshareMsg.SignedReshare.Reshare.Owner,
+		reshareMsg.SignedReshare.Reshare.Nonce,
+		id,
+		dkgResults)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	depositDataJson, keyshares, err := c.processDKGResultResponse(
+		dkgResults,
+		id,
+		reshareMsg.SignedReshare.Reshare.NewOperators,
+		reshareMsg.SignedReshare.Reshare.WithdrawalCredentials,
+		reshareMsg.SignedReshare.Reshare.Fork,
+		reshareMsg.SignedReshare.Reshare.Owner,
+		reshareMsg.SignedReshare.Reshare.Nonce)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := crypto.ValidateDepositDataCLI(depositDataJson, common.BytesToAddress(reshareMsg.SignedReshare.Reshare.WithdrawalCredentials)); err != nil {
+		return nil, nil, nil, err
+	}
+	if err := crypto.ValidateKeysharesCLI(keyshares,
+		reshareMsg.SignedReshare.Reshare.NewOperators,
+		reshareMsg.SignedReshare.Reshare.Owner,
+		reshareMsg.SignedReshare.Reshare.Nonce,
+		depositDataJson.PubKey); err != nil {
+		return nil, nil, nil, err
+	}
+	// sending back to operators results
+	depositData, err := json.Marshal(depositDataJson)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	keysharesData, err := json.Marshal(keyshares)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	var proofsArray []*wire.SignedProof
+	for _, res := range dkgResults {
+		proofsArray = append(proofsArray, &wire.SignedProof{res.SignedProof}) //nolint:all
+	}
+	proofsData, err := json.Marshal(proofsArray)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	resultMsg := &wire.ResultData{
+		Operators:     reshareMsg.SignedReshare.Reshare.NewOperators,
+		Identifier:    id,
+		DepositData:   depositData,
+		KeysharesData: keysharesData,
+		Proofs:        proofsData,
+	}
+	err = c.sendResult(resultMsg, reshareMsg.SignedReshare.Reshare.NewOperators, consts.API_RESULTS_URL, id)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("🤖 Error storing results at operators %w", err)
 	}
@@ -466,47 +599,72 @@ func parseDKGResultsFromBytes(responseResult [][]byte, id [24]byte) (dkgResults 
 }
 
 // SendInitMsg sends initial DKG ceremony message to participating operators from initiator
-func (c *Initiator) SendInitMsg(init *spec.Init, id [24]byte, operators []*spec.Operator) ([][]byte, error) {
+func (c *Initiator) SendInitMsg(id [24]byte, init *spec.Init, operators []*spec.Operator) (map[uint64][]byte, map[uint64]error, error) {
 	signedInitMsgBts, err := c.prepareAndSignMessage(init, wire.InitMessageType, id, c.Version)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return c.SendToAll(consts.API_INIT_URL, signedInitMsgBts, operators, false)
+	results, errs := c.SendToAll(consts.API_INIT_URL, signedInitMsgBts, operators)
+	return results, errs, nil
 }
 
-func (c *Initiator) SendResignMsg(resign *wire.ResignMessage, id [24]byte, operators []*spec.Operator) ([][]byte, error) {
+func (c *Initiator) SendResignMsg(id [24]byte, resign *wire.ResignMessage, operators []*spec.Operator) (map[uint64][]byte, map[uint64]error, error) {
 	signedResignMsgBts, err := c.prepareAndSignMessage(resign, wire.ResignMessageType, id, c.Version)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return c.SendToAll(consts.API_RESIGN_URL, signedResignMsgBts, operators, true)
+	results, errs := c.SendToAll(consts.API_RESIGN_URL, signedResignMsgBts, operators)
+	return results, errs, nil
+}
+
+func (c *Initiator) SendReshareMsg(id [24]byte, reshare *wire.ReshareMessage, operators []*spec.Operator) (map[uint64][]byte, map[uint64]error, error) {
+	signedReshareMsgBts, err := c.prepareAndSignMessage(reshare, wire.ReshareMessageType, id, c.Version)
+	if err != nil {
+		return nil, nil, err
+	}
+	results, errs := c.SendToAll(consts.API_RESHARE_URL, signedReshareMsgBts, operators)
+	return results, errs, nil
 }
 
 // SendExchangeMsgs sends combined exchange messages to each operator participating in DKG ceremony
-func (c *Initiator) SendExchangeMsgs(exchangeMsgs [][]byte, id [24]byte, operators []*spec.Operator) ([][]byte, error) {
+func (c *Initiator) SendExchangeMsgs(id [24]byte, exchangeMsgs map[uint64][]byte, operators []*spec.Operator) (map[uint64][]byte, map[uint64]error, error) {
 	mltpl, err := makeMultipleSignedTransports(c.PrivateKey, id, exchangeMsgs)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	mltplbyts, err := mltpl.MarshalSSZ()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return c.SendToAll(consts.API_DKG_URL, mltplbyts, operators, false)
+	results, errs := c.SendToAll(consts.API_DKG_URL, mltplbyts, operators)
+	return results, errs, nil
+}
+
+func (c *Initiator) SendExchangeMsgsReshare(id [24]byte, exchangeMsgs map[uint64][]byte, operators []*spec.Operator) (map[uint64][]byte, map[uint64]error, error) {
+	mltpl, err := makeMultipleSignedTransports(c.PrivateKey, id, exchangeMsgs)
+	if err != nil {
+		return nil, nil, err
+	}
+	mltplbyts, err := mltpl.MarshalSSZ()
+	if err != nil {
+		return nil, nil, err
+	}
+	results, errs := c.SendToAll(consts.API_DKG_URL, mltplbyts, operators)
+	return results, errs, nil
 }
 
 // SendKyberMsgs sends combined kyber messages to each operator participating in DKG ceremony
-func (c *Initiator) SendKyberMsgs(kyberDeals [][]byte, id [24]byte, operators []*spec.Operator) ([][]byte, error) {
+func (c *Initiator) SendKyberMsgs(id [24]byte, kyberDeals map[uint64][]byte, operators []*spec.Operator) (map[uint64][]byte, map[uint64]error, error) {
 	mltpl2, err := makeMultipleSignedTransports(c.PrivateKey, id, kyberDeals)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-
 	mltpl2byts, err := mltpl2.MarshalSSZ()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return c.SendToAll(consts.API_DKG_URL, mltpl2byts, operators, false)
+	results, errs := c.SendToAll(consts.API_DKG_URL, mltpl2byts, operators)
+	return results, errs, nil
 }
 
 func (c *Initiator) sendResult(resData *wire.ResultData, operators []*spec.Operator, method string, id [24]byte) error {
@@ -514,9 +672,13 @@ func (c *Initiator) sendResult(resData *wire.ResultData, operators []*spec.Opera
 	if err != nil {
 		return err
 	}
-	_, err = c.SendToAll(method, signedMsgBts, operators, true)
-	if err != nil {
-		return err
+	_, errs := c.SendToAll(method, signedMsgBts, operators)
+	if len(errs) != 0 {
+		var finalErr error
+		for id, err := range errs {
+			errors.Join(finalErr, fmt.Errorf("operator %d, error: %w", id, err))
+		}
+		return finalErr
 	}
 	return nil
 }
@@ -615,5 +777,107 @@ func (c *Initiator) processPongMessage(res wire.PongResult) error {
 		return err
 	}
 	c.Logger.Info("🍎 operator online and healthy", zap.Uint64("ID", pong.ID), zap.String("IP", res.IP), zap.String("Version", string(signedPongMsg.Message.Version)), zap.String("Public key", string(pong.PubKey)))
+	return nil
+}
+
+func (c *Initiator) ConstructReshareMessage(oldOperatorIDs, newOperatorIDs []uint64, validatorPub []byte, ethnetwork e2m_core.Network, withdrawCreds []byte, owner common.Address, nonce uint64, sk *ecdsa.PrivateKey, proofsData []*spec.SignedProof) (*wire.ReshareMessage, error) {
+	// Construct reshare message
+	oldOps, err := ValidatedOperatorData(oldOperatorIDs, c.Operators)
+	if err != nil {
+		return nil, err
+	}
+	newOps, err := ValidatedOperatorData(newOperatorIDs, c.Operators)
+	if err != nil {
+		return nil, err
+	}
+	if !spec.UniqueAndOrderedOperators(oldOps) {
+		return nil, fmt.Errorf("old operators are not ordered or unique")
+	}
+	if !spec.UniqueAndOrderedOperators(newOps) {
+		return nil, fmt.Errorf("new operators are not ordered or unique")
+	}
+	reshare := &spec.Reshare{
+		ValidatorPubKey:       validatorPub,
+		OldOperators:          oldOps,
+		NewOperators:          newOps,
+		OldT:                  uint64(len(oldOperatorIDs) - ((len(oldOperatorIDs) - 1) / 3)),
+		NewT:                  uint64(len(newOperatorIDs) - ((len(newOperatorIDs) - 1) / 3)),
+		Fork:                  ethnetwork.GenesisForkVersion(),
+		WithdrawalCredentials: withdrawCreds,
+		Owner:                 owner,
+		Nonce:                 nonce,
+	}
+	hash, err := reshare.HashTreeRoot()
+	if err != nil {
+		return nil, err
+	}
+	// Sign message root
+	ownerSig, err := eth_crypto.Sign(hash[:], sk)
+	if err != nil {
+		return nil, err
+	}
+	return &wire.ReshareMessage{
+		SignedReshare: &spec.SignedReshare{
+			Reshare:   *reshare,
+			Signature: ownerSig,
+		},
+		Proofs: proofsData,
+	}, nil
+}
+
+func (c *Initiator) ConstructResignMessage(operatorIDs []uint64, validatorPub []byte, ethnetwork e2m_core.Network, withdrawCreds []byte, owner common.Address, nonce uint64, sk *ecdsa.PrivateKey, proofsData []*spec.SignedProof) (*wire.ResignMessage, error) {
+	// create resign message
+	ops, err := ValidatedOperatorData(operatorIDs, c.Operators)
+	if err != nil {
+		return nil, err
+	}
+	resign := spec.Resign{ValidatorPubKey: validatorPub,
+		Fork:                  ethnetwork.GenesisForkVersion(),
+		WithdrawalCredentials: withdrawCreds,
+		Owner:                 owner,
+		Nonce:                 nonce}
+	hash, err := resign.HashTreeRoot()
+	if err != nil {
+		return nil, err
+	}
+	// Sign message root
+	ownerSig, err := eth_crypto.Sign(hash[:], sk)
+	if err != nil {
+		return nil, err
+	}
+	return &wire.ResignMessage{
+		Operators:    ops,
+		SignedResign: &spec.SignedResign{Resign: resign, Signature: ownerSig},
+		Proofs:       proofsData,
+	}, nil
+}
+func checkThreshold(responses map[uint64][]byte, errs map[uint64]error, oldOperators, newOperators []*spec.Operator, threshold int) error {
+	allOps := utils.JoinSets(oldOperators, newOperators)
+	if len(responses)+len(errs) != len(allOps) {
+		return fmt.Errorf("wrong amount of replies from operators")
+	}
+	// all newly introduced operators should reply
+	var finalErr error
+	for _, op := range newOperators {
+		if err, ok := errs[op.ID]; ok {
+			finalErr = errors.Join(finalErr, fmt.Errorf("error: %w", err))
+		}
+	}
+	if finalErr != nil {
+		return fmt.Errorf("some new operators returned errors, cant continue: %w", finalErr)
+	}
+	// we expect threshold of old operator responses
+	i := 0
+	for _, op := range oldOperators {
+		if _, ok := responses[op.ID]; ok {
+			i++
+		}
+	}
+	if i < threshold {
+		for _, err := range errs {
+			finalErr = errors.Join(finalErr, fmt.Errorf("error: %w", err))
+		}
+		return fmt.Errorf("less than threshold of operators replied: threshold %d, errors %d, %w", threshold, len(errs), finalErr)
+	}
 	return nil
 }

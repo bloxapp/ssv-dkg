@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/httprate"
 	"github.com/pkg/errors"
@@ -94,6 +95,35 @@ func RegisterRoutes(s *Server) {
 			}
 		})
 	s.Router.With(rateLimit(s.Logger, routeLimit)).
+		Post("/reshare", func(writer http.ResponseWriter, request *http.Request) {
+			s.Logger.Debug("incoming RESHARE msg")
+			rawdata, err := io.ReadAll(request.Body)
+			if err != nil {
+				utils.WriteErrorResponse(s.Logger, writer, fmt.Errorf("operator %d, err: %v", s.State.OperatorID, err), http.StatusBadRequest)
+				return
+			}
+			signedReshareMsg := &wire.SignedTransport{}
+			if err := signedReshareMsg.UnmarshalSSZ(rawdata); err != nil {
+				utils.WriteErrorResponse(s.Logger, writer, err, http.StatusBadRequest)
+				return
+			}
+			// Validate that incoming message is an init message
+			if signedReshareMsg.Message.Type != wire.ReshareMessageType {
+				utils.WriteErrorResponse(s.Logger, writer, fmt.Errorf("operator %d, err: %v", s.State.OperatorID, errors.New("not reshare message to reshare route")), http.StatusBadRequest)
+				return
+			}
+			reqid := signedReshareMsg.Message.Identifier
+			logger := s.Logger.With(zap.String("reqid", hex.EncodeToString(reqid[:])))
+			b, err := s.State.ReshareInstance(reqid, signedReshareMsg.Message, signedReshareMsg.Signer, signedReshareMsg.Signature)
+			if err != nil {
+				utils.WriteErrorResponse(s.Logger, writer, fmt.Errorf("operator %d, err: %v", s.State.OperatorID, err), http.StatusBadRequest)
+				return
+			}
+			logger.Info("✅ Reshare instance created successfully")
+			writer.WriteHeader(http.StatusOK)
+			writer.Write(b)
+		})
+	s.Router.With(rateLimit(s.Logger, routeLimit)).
 		Post("/dkg", func(writer http.ResponseWriter, request *http.Request) {
 			s.Logger.Debug("received a dkg protocol message")
 			rawdata, err := io.ReadAll(request.Body)
@@ -157,14 +187,18 @@ func RegisterRoutes(s *Server) {
 }
 
 // New creates Server structure using operator's RSA private key
-func New(key *rsa.PrivateKey, logger *zap.Logger, ver []byte, id uint64, outputPath string) (*Server, error) {
+func New(key *rsa.PrivateKey, logger *zap.Logger, ver []byte, id uint64, outputPath string, ethEndpointURL string) (*Server, error) {
 	r := chi.NewRouter()
 	operatorPubKey := key.Public().(*rsa.PublicKey)
 	pkBytes, err := spec_crypto.EncodeRSAPublicKey(operatorPubKey)
 	if err != nil {
 		return nil, err
 	}
-	swtch := NewSwitch(key, logger, ver, pkBytes, id)
+	ethBackend, err := ethclient.Dial(ethEndpointURL)
+	if err != nil {
+		return nil, err
+	}
+	swtch := NewSwitch(key, logger, ver, pkBytes, id, ethBackend)
 	s := &Server{
 		Logger:     logger,
 		Router:     r,

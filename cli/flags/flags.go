@@ -10,6 +10,7 @@ import (
 const (
 	withdrawAddress   = "withdrawAddress"
 	operatorIDs       = "operatorIDs"
+	newOperatorIDs    = "newOperatorIDs"
 	operatorsInfo     = "operatorsInfo"
 	operatorsInfoPath = "operatorsInfoPath"
 	privKey           = "privKey"
@@ -30,6 +31,9 @@ const (
 	serverTLSCertPath = "serverTLSCertPath"
 	serverTLSKeyPath  = "serverTLSKeyPath"
 	proofsFilePath    = "proofsFilePath"
+	ethKeystorePath   = "ethKeystorePath"
+	ethKeystorePass   = "ethKeystorePass"
+	ethEndpointURL    = "ethEndpointURL"
 )
 
 // WithdrawAddressFlag  adds withdraw address flag to the command
@@ -40,6 +44,11 @@ func WithdrawAddressFlag(c *cobra.Command) {
 // operatorIDsFlag adds operators IDs flag to the command
 func OperatorIDsFlag(c *cobra.Command) {
 	AddPersistentStringSliceFlag(c, operatorIDs, []string{"1", "2", "3"}, "Operator IDs", false)
+}
+
+// newOperatorIDsFlag adds new operators IDs flag to the command
+func NewOperatorIDsFlag(c *cobra.Command) {
+	AddPersistentStringSliceFlag(c, newOperatorIDs, []string{"1", "2", "3"}, "New operator IDs for resharing ceremony", false)
 }
 
 // OperatorsInfoFlag  adds path to operators' ifo file flag to the command
@@ -138,8 +147,24 @@ func OperatorIDFlag(c *cobra.Command) {
 }
 
 // ProofsFilePath add file path to proofs flag to the command
-func ProofsFilePath(c *cobra.Command){
+func ProofsFilePath(c *cobra.Command) {
 	AddPersistentStringFlag(c, proofsFilePath, "proofs.json", "Path to proofs file", false)
+}
+
+// KeystoreFilePath
+func KeystoreFilePath(c *cobra.Command) {
+	AddPersistentStringFlag(c, ethKeystorePath, "keystore.json", "Path to ethereum keystore json file", false)
+}
+
+// KeystoreFilePass
+func KeystoreFilePass(c *cobra.Command) {
+	AddPersistentStringFlag(c, ethKeystorePass, "", "Password to decrypt ethereum keystore json file", false)
+}
+
+
+// EthEndpointURL
+func EthEndpointURL(c *cobra.Command) {
+	AddPersistentStringFlag(c, ethEndpointURL, "http://127.0.0.1:8545", "Ethereum node endpoint URL", false)
 }
 
 // AddPersistentStringFlag adds a string flag to the command
